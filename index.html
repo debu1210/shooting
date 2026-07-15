@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PWA Bottle Shooter</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; touch-action: none; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #0f172a;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 600px;
+            padding: 0 20px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            z-index: 10;
+            pointer-events: none;
+        }
+        #gameCanvas {
+            background: linear-gradient(to bottom, #1e293b, #0f172a);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            cursor: crosshair;
+        }
+        #game-over-screen {
+            position: absolute;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 23, 42, 0.95);
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 20;
+        }
+        h1 { font-size: 3rem; margin-bottom: 10px; color: #ef4444; text-transform: uppercase; }
+        button {
+            padding: 12px 30px; font-size: 1.2rem; font-weight: bold;
+            background-color: #10b981; color: white; border: none;
+            border-radius: 8px; cursor: pointer; box-shadow: 0 5px 15px rgba(16,185,129,0.4);
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.95); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="score-label">SCORE: 0</div>
+        <div id="lives-label">LIVES: ❤️❤️❤️</div>
+    </div>
+
+    <div id="game-over-screen">
+        <h1>Game Over</h1>
+        <p id="final-score" style="font-size: 1.5rem; margin-bottom: 20px;"></p>
+        <button onclick="resetGame()">Play Again</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        let score = 0;
+        let lives = 3;
+        let gameOver = false;
+        
+        let bottles = [];
+        let particles = [];
+        let spawnTimer = 0;
+        let spawnInterval = 90; 
+        let flashAlpha = 0;
+
+        function resizeCanvas() {
+            canvas.width = Math.min(window.innerWidth, 600);
+            canvas.height = Math.min(window.innerHeight, 800);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Bottle {
+            constructor() {
+                this.width = 40;
+                this.height = 90;
+                this.x = Math.random() < 0.5 ? -this.width : canvas.width;
+                this.y = canvas.height - 50;
+                
+                this.vx = (this.x < 0) ? (Math.random() * 3 + 3) : -(Math.random() * 3 + 3);
+                this.vy = -(Math.random() * 6 + 12); 
+                this.gravity = 0.25;
+                this.color = `hsl(${Math.random() * 40 + 100}, 70%, 45%)`; 
+            }
+
+            update() {
+                this.x += this.vx;
+                this.vy += this.gravity;
+                this.y += this.vy;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.fillStyle = this.color;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.rect(this.x, this.y + 30, this.width, this.height - 30);
+                ctx.rect(this.x + this.width / 4, this.y, this.width / 2, 30);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        class GlassParticle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 4 + 3;
+                this.vx = (Math.random() - 0.5) * 10;
+                this.vy = (Math.random() - 0.5) * 10 - 3;
+                this.gravity = 0.3;
+                this.alpha = 1;
+                this.color = color;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.vy += this.gravity;
+                this.y += this.vy;
+                this.alpha -= 0.025; 
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, this.alpha);
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        function spawnBottle() {
+            spawnTimer++;
+            if (spawnTimer >= spawnInterval) {
+                bottles.push(new Bottle());
+                spawnTimer = 0;
+                spawnInterval = Math.max(45, 90 - Math.floor(score / 5) * 5);
+            }
+        }
+
+        function handleShot(clientX, clientY) {
+            if (gameOver) return;
+
+            const rect = canvas.getBoundingClientRect();
+            // Fixed: Standardize mapping to scale canvas ratios to fix input scaling offset issues
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            const shotX = (clientX - rect.left) * scaleX;
+            const shotY = (clientY - rect.top) * scaleY;
+
+            flashAlpha = 0.4; // Set linear delta flash value
+
+            for (let i = bottles.length - 1; i >= 0; i--) {
+                let b = bottles[i];
+                if (shotX >= b.x && shotX <= b.x + b.width && shotY >= b.y && shotY <= b.y + b.height) {
+                    for (let p = 0; p < 20; p++) {
+                        particles.push(new GlassParticle(b.x + b.width / 2, b.y + b.height / 2, b.color));
+                    }
+                    bottles.splice(i, 1);
+                    score++;
+                    document.getElementById('score-label').textContent = `SCORE: ${score}`;
+                    break;
+                }
+            }
+        }
+
+        canvas.addEventListener('mousedown', (e) => handleShot(e.clientX, e.clientY));
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); 
+            const touch = e.touches[0];
+            handleShot(touch.clientX, touch.clientY);
+        });
+
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (!gameOver) {
+                spawnBottle();
+
+                // Draw standard frame flashes cleanly inside rendering loops
+                if (flashAlpha > 0) {
+                    ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    flashAlpha -= 0.05;
+                }
+
+                for (let i = bottles.length - 1; i >= 0; i--) {
+                    bottles[i].update();
+                    bottles[i].draw();
+
+                    if (bottles[i].y > canvas.height + 100) {
+                        bottles.splice(i, 1);
+                        lives--;
+                        updateLivesUI();
+                        if (lives <= 0) endGame();
+                    }
+                }
+
+                // Fixed: Clean memory array buffers instantly when particles fade completely out
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    particles[i].update();
+                    if (particles[i].alpha <= 0) {
+                        particles.splice(i, 1);
+                    } else {
+                        particles[i].draw();
+                    }
+                }
+
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        function updateLivesUI() {
+            let hearts = "";
+            for (let i = 0; i < 3; i++) {
+                hearts += i < lives ? "❤️" : "🖤";
+            }
+            document.getElementById('lives-label').textContent = `LIVES: ${hearts}`;
+        }
+
+        function endGame() {
+            gameOver = true;
+            document.getElementById('game-over-screen').style.display = 'flex';
+            document.getElementById('final-score').textContent = `You broke ${score} bottles!`;
+        }
+
+        function resetGame() {
+            score = 0;
+            lives = 3;
+            gameOver = false;
+            bottles = [];
+            particles = [];
+            spawnTimer = 0;
+            spawnInterval = 90;
+            flashAlpha = 0;
+            document.getElementById('score-label').textContent = `SCORE: ${score}`;
+            updateLivesUI();
+            document.getElementById('game-over-screen').style.display = 'none';
+            gameLoop();
+        }
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(() => {});
+            });
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
